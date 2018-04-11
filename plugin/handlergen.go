@@ -229,6 +229,7 @@ func (p *OrmPlugin) findAssociationKeys(parent *generator.Descriptor,
 		tagType := strings.Split(arg, ":") // tags follow key:value convention
 		tagType[0] = strings.ToLower(tagType[0])
 		if tagType[0] == "many2many" {
+			return nil
 			// Not there just yet
 		} else if tagType[0] == "foreignkey" {
 			childFields = []string{}
@@ -289,6 +290,9 @@ func (p *OrmPlugin) removeChildAssociations(message *generator.Descriptor) bool 
 
 		// Prep the filter for the child objects of this type
 		keys := p.findAssociationKeys(message, typeNames[typeName], field)
+		if keys == nil {
+			return false
+		}
 		childFKeyTypeName := ""
 		fieldTypeName := p.TypeName(typeNames[rawFieldType])
 		p.P(`filterObj`, rawFieldType, ` := `, fieldTypeName, `ORM{}`)

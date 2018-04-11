@@ -163,11 +163,26 @@ func (p *OrmPlugin) generateMessages(message *generator.Descriptor) {
 				} else {
 					fieldType = fmt.Sprintf("*%sORM", strings.Trim(fieldType, "*"))
 				}
-				// Insert the foreign key if not present,
+				// Insert the foreign keys if not present, assumption is one:many
+				// unless a gorm:"many2many" tag is defined
+				lcTagString := strings.ToLower(tagString)
 				if tagString == "" {
 					tagString = fmt.Sprintf("`gorm:\"foreignkey:%sId\"`", typeName)
-				} else if !strings.Contains(strings.ToLower(tagString), "foreignkey") {
-					if strings.Contains(strings.ToLower(tagString), "gorm:") { // gorm tag already there
+				} else if strings.Contains(lcTagString, "many2many") {
+					// It's a many:many, so add default FKs unless they're already there
+					index := strings.Index(lcTagString, "gorm:")
+					if !strings.Contains(lcTagString, "association_jointable_foreignkey") {
+						tagString = fmt.Sprintf("%sassociation_jointable_foreignkey:%s_id;%s",
+							tagString[:index+6], jgorm.ToDBName(strings.Trim(strings.Trim(fieldType, "[]*"), "ORM")), tagString[index+6:])
+					}
+					if i := strings.Index(lcTagString, "jointable_foreignkey"); i == -1 || tagString[i-1] == '_' {
+						tagString = fmt.Sprintf("%sjointable_foreignkey:%s_id;%s",
+							tagString[:index+6], jgorm.ToDBName(strings.Join(message.TypeName(), "_")), tagString[index+6:])
+					}
+
+				} else if !strings.Contains(lcTagString, "foreignkey") {
+					// No foreignkey is set, so add a default (without ORM suffix)
+					if strings.Contains(lcTagString, "gorm:") { // gorm tag already there
 						index := strings.Index(tagString, "gorm:")
 						tagString = fmt.Sprintf("%sforeignkey:%sId;%s", tagString[:index+6],
 							typeName, tagString[index+6:])
