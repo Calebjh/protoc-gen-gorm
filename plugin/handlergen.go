@@ -284,7 +284,7 @@ func (p *OrmPlugin) removeChildAssociations(message *generator.Descriptor) bool 
 		fieldType, _ := p.GoType(message, field)
 		rawFieldType := strings.Trim(fieldType, "[]*")
 		// Has to be ORMable
-		if _, exists := convertibleTypes[rawFieldType]; !exists {
+		if _, exists := additionalFields[rawFieldType]; !exists {
 			continue
 		}
 

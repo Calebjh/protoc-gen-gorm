@@ -51,6 +51,7 @@ var _ = math.Inf
 
 // TestTypesORM is a message that serves as an example
 type TestTypesORM struct {
+	TestTypesUuid int32
 	// Skipping field from proto option: ApiOnlyString
 	// The non-ORMable repeated field "Numbers" can't be included
 	OptionalString *string
@@ -116,9 +117,10 @@ func ConvertTestTypesFromORM(from TestTypesORM) (TestTypes, error) {
 // TypeWithIDORM no comment was provided for message type
 type TypeWithIDORM struct {
 	Uuid          int32           `gorm:"primary_key"`
+	things        TypeWithIDORM   `many2many:{tablename}`
+	ANestedObject *TestTypesORM   `gorm:"association_foreignkey:TestTypesUuid;foreignkey:Uuid"`
 	Ip            string          `gorm:"ip_addr"`
 	Things        []*TestTypesORM `gorm:"foreignkey:TypeWithIDId"`
-	ANestedObject *TestTypesORM   `gorm:"foreignkey:TypeWithIDId"`
 	Id            uint32
 }
 

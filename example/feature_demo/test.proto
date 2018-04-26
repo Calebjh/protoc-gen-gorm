@@ -35,7 +35,7 @@ message TypeWithID {
       ]
     };
   string ip = 1 [(gorm.field) = {tags: "gorm:\"ip_addr\""}];
-  repeated TestTypes things = 3;
+  repeated TestTypes things = 3 [(gorm.field).many2many = {}];
   TestTypes a_nested_object = 4;
   uint32 id = 5;
 }

@@ -42,6 +42,48 @@ extend google.protobuf.FieldOptions {
 message GormFieldOptions {
   optional string tags = 1;
   optional bool drop = 2;
+  optional OneToManyFieldOption one2many = 3;
+  optional BelongsToFieldOption belongs_to = 4;
+  optional HasOneFieldOption has_one = 5;
+  optional ManyToManyFieldOption many2many = 6;
+}
+
+// Default Primary Keys (pk) is just id
+
+// Default behavior for any repeated {ormable type} fields
+message OneToManyFieldOption {
+  // Default value: {typename}_{pk1}[, {typename}_{pk2}...]
+  optional string foreignkey = 1;
+  // Default value: {pk1}[, {pk2}...]
+  optional string association_foreignkey = 2;
+  // If set will add this field, and R ordered based on this field, and W
+  // after setting the field sequentially
+  optional string position_field = 3;
+}
+message BelongsToFieldOption {
+  // Default value: {child_typename}_{pk1}[, {child_typename}_{pk2} ...]
+  optional string foreignkey = 1;
+  // Default value: {pk1}[, {pk2} ...]
+  optional string association_foreignkey = 2;
+}
+// Default behavior for any non-repeated {ormable type} fields
+message HasOneFieldOption {
+  // Default value: {child_typename}_{pk1}[, {child_typename}_{pk2} ...]
+  optional string foreignkey = 1;
+    // Default value: {pk1}[, {pk2} ...]
+  optional string association_foreignkey = 2;
+}
+message ManyToManyFieldOption {
+  // Default value: {typename}_{child_typename}
+  optional string jointable = 1;
+  // Default value: {child_typename}_{pk1}[, {child_typename}_{pk2} ...]
+  optional string foreignkey = 2;
+  // Default value: {pk1}[, {pk2} ...]
+  optional string association_foreignkey = 3;
+  //
+  optional string jointable_foreignkey = 4;
+
+  optional string association_jointable_foreignkey = 5;
 }
 
 // To be used in (leiu of) the interceptor

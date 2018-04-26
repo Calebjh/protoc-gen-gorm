@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/gogo/protobuf/proto"
@@ -13,7 +14,13 @@ import (
 )
 
 // ORMable types, only for existence checks
-var convertibleTypes = make(map[string]struct{})
+var additionalFields = make(map[string][]basicField)
+
+type basicField struct {
+	name     string
+	typeName string
+	tag      string
+}
 
 // All message objects
 var typeNames = make(map[string]*generator.Descriptor)
@@ -71,10 +78,18 @@ func (p *OrmPlugin) Generate(file *generator.FileDescriptor) {
 		if msg.DescriptorProto.GetOptions().GetMapEntry() {
 			continue
 		}
-		unlintedTypeName := generator.CamelCaseSlice(msg.TypeName())
-		typeNames[unlintedTypeName] = msg
+		typeName := generator.CamelCaseSlice(msg.TypeName())
+		typeNames[typeName] = msg
 		if opts := getMessageOptions(msg); opts != nil && *opts.Ormable {
-			convertibleTypes[unlintedTypeName] = struct{}{}
+			if _, ok := additionalFields[typeName]; !ok {
+				additionalFields[typeName] = []basicField{}
+			}
+		}
+	}
+	// Now that we know our ORMable types, go through and register bonus fields
+	for _, msg := range file.Messages() {
+		for _, field := range msg.GetField() {
+			p.prepareAssocationKeys(msg, field)
 		}
 	}
 	for _, msg := range file.Messages() {
@@ -82,8 +97,8 @@ func (p *OrmPlugin) Generate(file *generator.FileDescriptor) {
 		if msg.DescriptorProto.GetOptions().GetMapEntry() {
 			continue
 		}
-		unlintedTypeName := generator.CamelCaseSlice(msg.TypeName())
-		if _, exists := convertibleTypes[unlintedTypeName]; !exists {
+		typeName := generator.CamelCaseSlice(msg.TypeName())
+		if _, exists := additionalFields[typeName]; !exists {
 			continue
 		}
 		// Create the orm object definitions and the converter functions
@@ -102,6 +117,8 @@ func (p *OrmPlugin) Generate(file *generator.FileDescriptor) {
 func (p *OrmPlugin) generateMessages(message *generator.Descriptor) {
 	typeName := p.TypeName(message)
 	p.generateMessageHead(message)
+	p.generateExtraFields(message)
+FIELDLOOP:
 	for _, field := range message.Field {
 		fieldName := generator.CamelCase(field.GetName())
 		fieldType, _ := p.GoType(message, field)
@@ -120,7 +137,7 @@ func (p *OrmPlugin) generateMessages(message *generator.Descriptor) {
 				}
 			}
 		}
-		if _, exists := convertibleTypes[strings.Trim(fieldType, "[]*")]; field.IsRepeated() && !exists {
+		if _, exists := additionalFields[strings.Trim(fieldType, "[]*")]; field.IsRepeated() && !exists {
 			p.P(`// The non-ORMable repeated field "`, fieldName, `" can't be included`)
 			continue
 		} else if *(field.Type) == typeEnum {
@@ -154,7 +171,7 @@ func (p *OrmPlugin) generateMessages(message *generator.Descriptor) {
 			} else if rawType == protoTypeTimestamp {
 				p.usingTime = true
 				fieldType = "time.Time"
-			} else if _, exists := convertibleTypes[strings.Trim(fieldType, "[]*")]; !exists {
+			} else if _, exists := additionalFields[strings.Trim(fieldType, "[]*")]; !exists {
 				p.P("// Skipping type ", fieldType, ", not tagged as ormable")
 				continue
 			} else {
@@ -163,6 +180,16 @@ func (p *OrmPlugin) generateMessages(message *generator.Descriptor) {
 				} else {
 					fieldType = fmt.Sprintf("*%sORM", strings.Trim(fieldType, "*"))
 				}
+
+				// Check if this field was 'overwritten' by an association
+				if fields, ok := additionalFields[typeName]; ok {
+					for _, field := range fields {
+						if field.name == fieldName {
+							continue FIELDLOOP
+						}
+					}
+				}
+
 				// Insert the foreign keys if not present, assumption is one:many
 				// unless a gorm:"many2many" tag is defined
 				lcTagString := strings.ToLower(tagString)
@@ -219,6 +246,9 @@ func (p *OrmPlugin) generateMessageHead(message *generator.Descriptor) {
 	}
 	p.P(`//`, comment)
 	p.P(`type `, typeNameOrm, ` struct {`)
+}
+
+func (p *OrmPlugin) generateExtraFields(message *generator.Descriptor) {
 	// Checking for any ORM only fields specified by option (gorm.opts).include
 	if opts := getMessageOptions(message); opts != nil {
 		for _, field := range opts.Include {
@@ -231,6 +261,10 @@ func (p *OrmPlugin) generateMessageHead(message *generator.Descriptor) {
 		if opts.GetMultiAccount() {
 			p.P("AccountID string")
 		}
+	}
+	for _, field := range additionalFields[p.TypeName(message)] {
+		p.P(field.name, ` `, field.typeName, ` `, field.tag)
+
 	}
 }
 
@@ -307,7 +341,7 @@ func (p *OrmPlugin) generateFieldConversion(message *generator.Descriptor, field
 	fieldName := generator.CamelCase(field.GetName())
 	fieldType, _ := p.GoType(message, field)
 	if field.IsRepeated() { // Repeated Object ----------------------------------
-		if _, exists := convertibleTypes[strings.Trim(fieldType, "[]*")]; exists { // Repeated ORMable type
+		if _, exists := additionalFields[strings.Trim(fieldType, "[]*")]; exists { // Repeated ORMable type
 			fieldType = strings.Trim(fieldType, "[]*")
 			dir := "From"
 			if toORM {
@@ -377,7 +411,7 @@ func (p *OrmPlugin) generateFieldConversion(message *generator.Descriptor, field
 				p.P(`return to, err`)
 				p.P(`}`)
 			}
-		} else if _, exists := convertibleTypes[strings.Trim(fieldType, "[]*")]; exists {
+		} else if _, exists := additionalFields[strings.Trim(fieldType, "[]*")]; exists {
 			// Not a WKT, but a type we're building converters for
 			fieldType = strings.Trim(fieldType, "*")
 			dir := "From"
@@ -396,4 +430,152 @@ func (p *OrmPlugin) generateFieldConversion(message *generator.Descriptor, field
 		p.P(`to.`, fieldName, ` = from.`, fieldName)
 	}
 	return nil
+}
+
+func (p *OrmPlugin) getPrimaryKeys(message *generator.Descriptor) []basicField {
+	keys := []basicField{}
+	for _, field := range message.GetField() {
+		if tags := getFieldOptions(field); tags != nil {
+			lcTags := strings.ToLower(tags.GetTags())
+			if strings.Contains(lcTags, "gorm") &&
+				strings.Contains(lcTags, "primary_key") {
+
+				fieldType, _ := p.GoType(message, field)
+				rawFieldType := strings.Trim(fieldType, "[]*")
+				keys = append(keys, basicField{
+					name:     generator.CamelCase(field.GetName()),
+					typeName: generator.CamelCase(rawFieldType),
+				})
+			}
+		}
+	}
+	mOpts := getMessageOptions(message)
+	if mOpts == nil {
+		return keys
+	}
+	for _, field := range mOpts.GetInclude() {
+		lcTags := strings.ToLower(field.GetTags())
+		if strings.Contains(lcTags, "gorm") &&
+			strings.Contains(lcTags, "primary_key") {
+			keys = append(keys, basicField{
+				name:     generator.CamelCase(field.GetName()),
+				typeName: field.GetType(),
+			})
+		}
+	}
+	return keys
+}
+
+func (p *OrmPlugin) hasField(message *generator.Descriptor, fieldName string) bool {
+	for _, field := range message.GetField() {
+		if generator.CamelCase(field.GetName()) == fieldName {
+			return true
+		}
+	}
+	mOpts := getMessageOptions(message)
+	if mOpts == nil {
+		return false
+	}
+	for _, field := range mOpts.GetInclude() {
+		if generator.CamelCase(field.GetName()) == fieldName {
+			return true
+		}
+	}
+	for _, field := range additionalFields[p.TypeName(message)] {
+		if field.name == fieldName {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *OrmPlugin) addAssociationField(addField basicField, toType, fromType string) {
+	if !p.hasField(typeNames[toType], addField.name) {
+		additionalFields[toType] = append(additionalFields[toType], addField)
+	} else {
+		fmt.Fprintf(os.Stderr, "[Warning] A second reference is being made to FK %s for type %s, referenced by %s\n",
+			addField.name, toType, fromType)
+	}
+}
+
+func (p *OrmPlugin) prepareAssocationKeys(message *generator.Descriptor,
+	field *descriptor.FieldDescriptorProto) {
+
+	typeName := p.TypeName(message)
+	if *(field.Type) != typeMessage {
+		return
+	}
+	// If field type is any WKT or a non-ormable type, skip
+	fieldType, _ := p.GoType(message, field)
+	//fmt.Fprintf(os.Stderr, "%s\n", fieldType)
+	//parts := strings.Split(fieldType, ".")
+	childType := strings.Trim(fieldType, "[]*") //parts[len(parts)-1]
+	if _, ok := wellKnownTypes[childType]; ok || childType == protoTypeUUID ||
+		childType == protoTypeTimestamp || childType == "Empty" {
+		return
+	}
+	if _, exists := additionalFields[childType]; !exists {
+		return
+	}
+
+	myPKs := p.getPrimaryKeys(message)
+	fOpts := getFieldOptions(field)
+	// Check for many2many
+	if fOpts != nil && field.IsRepeated() && fOpts.Many2Many != nil {
+		// Overwrite the reference field with custom comment
+		additionalFields[typeName] = append(additionalFields[typeName], basicField{
+			name:     field.GetName(),
+			typeName: fmt.Sprintf("%sORM", typeName),
+			tag:      "`many2many:{tablename}`",
+		})
+		return
+	}
+	// Either has_one (default) or belongs_to
+	if fOpts != nil && fOpts.BelongsTo != nil {
+		for _, pk := range myPKs {
+			fkField := basicField{
+				name:     fmt.Sprintf("%s%s", childType, pk.name),
+				typeName: pk.typeName,
+			}
+			p.addAssociationField(fkField, childType, typeName)
+		}
+		return
+	}
+
+	// Resorting to one2many
+	if fOpts != nil && field.IsRepeated() && fOpts.One2Many != nil {
+
+	} else if fOpts != nil && fOpts.HasOne != nil {
+
+	} else {
+		// For foreign and association keys one:many and has one act same
+		fks := ""
+		assocFKs := ""
+		for i, pk := range myPKs {
+			fkField := basicField{
+				name:     fmt.Sprintf("%s%s", childType, pk.name),
+				typeName: pk.typeName,
+			}
+			if i != 0 {
+				fks = fmt.Sprintf("%s,", fks)
+				assocFKs = fmt.Sprintf("%s,", assocFKs)
+			}
+			fks = fmt.Sprintf("%s%s", fks, pk.name)
+			assocFKs = fmt.Sprintf("%s%s", assocFKs, fkField.name)
+			p.addAssociationField(fkField, childType, typeName)
+		}
+		// Overwrite the reference field with customized comment
+		tag := ""
+		if opts := getFieldOptions(field); opts != nil {
+			tag = opts.GetTags()
+		}
+		tag, _ = safeAddGORMTag(tag, "foreignkey", fks)
+		tag, _ = safeAddGORMTag(tag, "association_foreignkey", assocFKs)
+		additionalFields[typeName] = append(additionalFields[typeName], basicField{
+			name:     generator.CamelCase(field.GetName()),
+			typeName: fmt.Sprintf("%sORM", fieldType),
+			tag:      tag,
+		})
+	}
+	return
 }
